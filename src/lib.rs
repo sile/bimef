@@ -38,7 +38,27 @@ impl Bimef {
     fn tsmooth(&self, im: &IlluminationMap, lamb: f64, sigma: f64) {
         let sharpness = 0.001;
         let (wx, wy) = self.compute_texture_weights(im, sigma, sharpness);
-        //todo!()
+        self.solve_linear_equation(im, &wx, &wy, lamb);
+    }
+
+    fn solve_linear_equation(
+        &self,
+        im: &IlluminationMap,
+        wx: &IlluminationMap,
+        wy: &IlluminationMap,
+        lamb: f64,
+    ) {
+        let r = im.y_len();
+        let c = im.x_len();
+        let k = r * c;
+        let dx = wx.iter_f().map(|v| -lamb * v).collect::<Vec<_>>();
+        let dy = wy.iter_f().map(|v| -lamb * v).collect::<Vec<_>>();
+        let dxa = wx.iter_2x().map(|v| -lamb * v).collect::<Vec<_>>();
+        let dya = wy.iter_2y().map(|v| -lamb * v).collect::<Vec<_>>();
+        let dxd1 = wx.iter_3x().map(|v| -lamb * v).collect::<Vec<_>>();
+        let dyd1 = wy.iter_3y().map(|v| -lamb * v).collect::<Vec<_>>();
+        let dxd2 = wx.iter_4x().map(|v| -lamb * v).collect::<Vec<_>>();
+        let dyd2 = wy.iter_4y().map(|v| -lamb * v).collect::<Vec<_>>();
     }
 
     fn compute_texture_weights(
@@ -74,6 +94,84 @@ impl IlluminationMap {
             }
         }
         Self { values }
+    }
+
+    pub fn iter_f(&self) -> impl '_ + Iterator<Item = f64> {
+        let x_len = self.x_len();
+        let y_len = self.y_len();
+        (0..x_len).flat_map(move |x| (0..y_len).map(move |y| self.values[y][x]))
+    }
+
+    pub fn iter_2x(&self) -> impl '_ + Iterator<Item = f64> {
+        let x_len = self.x_len();
+        let y_len = self.y_len();
+        (0..x_len).flat_map(move |x| {
+            (0..y_len).map(move |y| self.values[y][x.checked_sub(1).unwrap_or(x_len - 1)])
+        })
+    }
+
+    pub fn iter_2y(&self) -> impl '_ + Iterator<Item = f64> {
+        let x_len = self.x_len();
+        let y_len = self.y_len();
+        (0..x_len).flat_map(move |x| {
+            (0..y_len).map(move |y| self.values[y.checked_sub(1).unwrap_or(y_len - 1)][x])
+        })
+    }
+
+    pub fn iter_3x(&self) -> impl '_ + Iterator<Item = f64> {
+        let x_len = self.x_len();
+        let y_len = self.y_len();
+        (0..x_len).flat_map(move |x| {
+            (0..y_len).map(move |y| {
+                if x == 0 {
+                    self.values[y][x_len - 1]
+                } else {
+                    0.0
+                }
+            })
+        })
+    }
+
+    pub fn iter_3y(&self) -> impl '_ + Iterator<Item = f64> {
+        let x_len = self.x_len();
+        let y_len = self.y_len();
+        (0..x_len).flat_map(move |x| {
+            (0..y_len).map(move |y| {
+                if y == 0 {
+                    self.values[y_len - 1][x]
+                } else {
+                    0.0
+                }
+            })
+        })
+    }
+
+    pub fn iter_4x(&self) -> impl '_ + Iterator<Item = f64> {
+        let x_len = self.x_len();
+        let y_len = self.y_len();
+        (0..x_len).flat_map(move |x| {
+            (0..y_len).map(move |y| {
+                if x == x_len - 1 {
+                    0.0
+                } else {
+                    self.values[y][x]
+                }
+            })
+        })
+    }
+
+    pub fn iter_4y(&self) -> impl '_ + Iterator<Item = f64> {
+        let x_len = self.x_len();
+        let y_len = self.y_len();
+        (0..x_len).flat_map(move |x| {
+            (0..y_len).map(move |y| {
+                if y == y_len - 1 {
+                    0.0
+                } else {
+                    self.values[y][x]
+                }
+            })
+        })
     }
 
     pub fn calc_weights(&mut self, other: &Self, sharpness: f64) {
