@@ -73,6 +73,9 @@ impl Bimef {
         let axy = ax.add(ay);
         let axy_t = axy.t();
         let a = axy.add(axy_t.add(SparseMatrix::from_diag(d)));
+
+        let tin = im.iter_f().collect::<Vec<_>>();
+        let factor = a.cholesky();
     }
 
     fn compute_texture_weights(
@@ -89,10 +92,12 @@ impl Bimef {
 
         gauker_v.calc_weights(&dt0_v, sharpness);
         gauker_h.calc_weights(&dt0_h, sharpness);
-
         (gauker_h, gauker_v)
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct Factor(SparseMatrix);
 
 #[derive(Debug, Clone)]
 pub struct SparseMatrix {
@@ -136,6 +141,47 @@ impl SparseMatrix {
         }
     }
 
+    // https://en.wikipedia.org/wiki/Incomplete_Cholesky_factorization
+    pub fn cholesky(mut self) -> Factor {
+        // TODO: optimize
+        let n = self.size;
+        for k in 0..n {
+            let v0 = if let Some(v) = self.matrix.get_mut(&(k, k)) {
+                *v = v.sqrt();
+                *v
+            } else {
+                0.0
+            };
+
+            for i in k + 1..n {
+                if let Some(v) = self.matrix.get_mut(&(i, k)) {
+                    if *v != 0.0 {
+                        *v /= v0;
+                    }
+                }
+            }
+
+            for j in k + 1..n {
+                for i in j..n {
+                    let v_ik = self.matrix.get(&(i, k)).copied().unwrap_or(0.0);
+                    let v_jk = self.matrix.get(&(j, k)).copied().unwrap_or(0.0);
+                    if let Some(v) = self.matrix.get_mut(&(i, j)) {
+                        if *v != 0.0 {
+                            *v -= v_ik * v_jk;
+                        }
+                    }
+                }
+            }
+        }
+        for i in 0..n {
+            for j in i + 1..n {
+                self.matrix.remove(&(i, j));
+            }
+        }
+
+        Factor(self)
+    }
+
     pub fn add(mut self, rhs: Self) -> Self {
         for (k, v) in rhs.matrix.into_iter() {
             *self.matrix.entry(k).or_default() += v;
@@ -150,6 +196,12 @@ pub struct IlluminationMap {
 }
 
 impl IlluminationMap {
+    pub fn print(&self) {
+        for v in &self.values {
+            println!("{:?}", v);
+        }
+    }
+
     pub fn new(image: &Image<Rgb<f64>>) -> Self {
         let mut values = vec![vec![0.0; image.width as usize]; image.height as usize];
         for y in 0..image.height as usize {
@@ -241,7 +293,7 @@ impl IlluminationMap {
     pub fn calc_weights(&mut self, other: &Self, sharpness: f64) {
         for y in 0..self.y_len() {
             for x in 0..self.x_len() {
-                let w = 1.0 / (self.values[y][x].abs() * other.values[y][x].abs()) + sharpness;
+                let w = 1.0 / (self.values[y][x].abs() * other.values[y][x].abs() + sharpness);
                 self.values[y][x] = w;
             }
         }
@@ -344,7 +396,7 @@ impl Image<Rgb<u8>> {
             pixels.push(Rgb {
                 r: bytes[i * 3],
                 g: bytes[i * 3 + 1],
-                b: bytes[i + 3 + 2],
+                b: bytes[i * 3 + 2],
             });
         }
 
