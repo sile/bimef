@@ -76,6 +76,8 @@ impl Bimef {
 
         let tin = im.iter_f().collect::<Vec<_>>();
         let factor = a.cholesky();
+        let tout = factor.solve(&tin);
+        println!("{:?}", tout);
     }
 
     fn compute_texture_weights(
@@ -100,6 +102,51 @@ impl Bimef {
 pub struct Factor {
     d: Vec<f64>,
     l: HashMap<(usize, usize), f64>,
+}
+
+impl Factor {
+    pub fn solve(&self, b: &[f64]) -> Vec<f64> {
+        let l = self.lu_l();
+        let u = self.lu_u();
+
+        fn get(m: &HashMap<(usize, usize), f64>, y: usize, x: usize) -> f64 {
+            m.get(&(y, x)).copied().unwrap_or(0.0)
+        }
+
+        let mut x = Vec::new();
+        let n = self.d.len();
+
+        // Forward substitution.
+        for i in 0..n {
+            let mut bly = b[i];
+            for j in 0..i {
+                bly -= get(&l, i, j) * x[j];
+            }
+            x.push(bly / get(&l, i, i));
+        }
+
+        // Backword substitution.
+        for i in (0..n).rev() {
+            let mut yux = x[i];
+            for j in i + 1..n {
+                yux -= get(&u, i, j) * x[j];
+            }
+            x[i] = yux;
+        }
+
+        x
+    }
+
+    fn lu_l(&self) -> HashMap<(usize, usize), f64> {
+        self.l
+            .iter()
+            .map(|(&(y, x), &v)| ((y, x), v * self.d[x]))
+            .collect()
+    }
+
+    fn lu_u(&self) -> HashMap<(usize, usize), f64> {
+        self.l.iter().map(|(&(y, x), &v)| ((x, y), v)).collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -144,7 +191,6 @@ impl SparseMatrix {
         }
     }
 
-    // https://en.wikipedia.org/wiki/Incomplete_Cholesky_factorization
     pub fn cholesky(self) -> Factor {
         let n = self.size;
         let mut d = vec![self.get(0, 0)];
