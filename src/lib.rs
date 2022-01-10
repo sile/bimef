@@ -3,16 +3,16 @@ use std::collections::HashMap;
 #[derive(Debug)]
 pub struct Bimef {
     /// Enhancement ratio.
-    mu: f32,
+    mu: f64,
 
     /// Exposure ratio.
     k: Option<Vec<f32>>,
 
     /// Camera response model parameter.
-    a: f32,
+    _a: f64,
 
     /// Camera response model parameter.
-    b: f32,
+    _b: f64,
 }
 
 impl Bimef {
@@ -20,12 +20,12 @@ impl Bimef {
         Self {
             mu: 0.5,
             k: None,
-            a: -0.3293,
-            b: 1.1258,
+            _a: -0.3293,
+            _b: 1.1258,
         }
     }
 
-    pub fn enhance(&self, image: Image<Rgb<f64>>) -> Image<Rgb<f64>> {
+    pub fn enhance(&self, image: Image<Rgb<f64>>) -> Image<Rgb<u8>> {
         let lamb = 0.5;
         let sigma = 5.0;
 
@@ -42,22 +42,39 @@ impl Bimef {
         };
 
         // Weight matrix.
+        let image2 = image.map(|i, rgb| {
+            let w = t_our[i].powf(self.mu);
+            Rgb {
+                r: rgb.r * w,
+                g: rgb.g * w,
+                b: rgb.b * w,
+            }
+        });
+        let j2 = j.map(|i, rgb| {
+            let w = t_our[i].powf(self.mu);
+            Rgb {
+                r: rgb.r * (1.0 - w),
+                g: rgb.g * (1.0 - w),
+                b: rgb.b * (1.0 - w),
+            }
+        });
 
-        // # W: Weight Matrix
-        // t = np.tile(np.expand_dims(t_our, axis=2), (1, 1, I.shape[2]))  # tolerance 1e-14
-        // W = t ** mu  # tolerance 1e-14
-        // I2 = I * W  # tolerance 1e-14
-        // J2 = J * (1.0-W)  # tolerance 1e-7
-        // fused = I2 + J2  # tolerance of 1e-6
-        //
-        // fused[fused > 1] = 1  # fix overflow
-        // fused[fused < 0] = 0  # fix underflow
-        // fused = (255*fused + 0.5).astype(np.uint8)  # convert double img to uint8
+        let fused = image2.map(|i, a| {
+            let b = j2.pixels[i];
+            fn to_u8(v: f64) -> u8 {
+                (v.max(0.0).min(1.0) * 255.0).round() as u8
+            }
+            Rgb {
+                r: to_u8(a.r + b.r),
+                g: to_u8(a.g + b.g),
+                b: to_u8(a.b + b.b),
+            }
+        });
 
-        image
+        fused
     }
 
-    fn max_entropy_enhance(&self, image: &Image<Rgb<f64>>, is_bad: &[bool]) -> Vec<f64> {
+    fn max_entropy_enhance(&self, image: &Image<Rgb<f64>>, is_bad: &[bool]) -> Image<Rgb<f64>> {
         // TODO: resize 50x50
         let y = image.to_gray();
         let y = y
@@ -113,10 +130,7 @@ impl Bimef {
             }
         }
 
-        apply_k(&problem.y, best_k)
-            .into_iter()
-            .map(|v| v - 0.01)
-            .collect()
+        image.apply_k(best_k)
     }
 
     fn tsmooth(&self, im: &IlluminationMap, lamb: f64, sigma: f64) -> Vec<f64> {
@@ -539,9 +553,35 @@ pub struct Image<T> {
     pub pixels: Vec<T>,
 }
 
-impl Image<f64> {}
+impl<T> Image<T> {
+    pub fn map<F, U>(&self, f: F) -> Image<U>
+    where
+        F: Fn(usize, &T) -> U,
+    {
+        Image {
+            width: self.width,
+            height: self.height,
+            pixels: self
+                .pixels
+                .iter()
+                .enumerate()
+                .map(|(i, x)| f(i, x))
+                .collect(),
+        }
+    }
+}
 
 impl Image<Rgb<u8>> {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity((self.width * self.height * 3) as usize);
+        for p in &self.pixels {
+            buf.push(p.r);
+            buf.push(p.g);
+            buf.push(p.b);
+        }
+        buf
+    }
+
     pub fn from_bytes(width: u32, height: u32, bytes: &[u8]) -> Self {
         let n = (width * height) as usize;
         assert_eq!(n * 3, bytes.len());
@@ -583,6 +623,18 @@ impl Image<Rgb<f64>> {
                 .map(|p| (p.r * p.g * p.b).powf(1.0 / 3.0))
                 .collect(),
         }
+    }
+
+    pub fn apply_k(&self, k: f64) -> Self {
+        let a = -0.3293;
+        let b = 1.1258;
+        let beta = ((1.0 - k.powf(a)) * b).exp();
+        let gamma = k.powf(a);
+        self.map(|_, rgb| Rgb {
+            r: rgb.r.powf(gamma) * beta - 0.01,
+            g: rgb.g.powf(gamma) * beta - 0.01,
+            b: rgb.b.powf(gamma) * beta - 0.01,
+        })
     }
 }
 

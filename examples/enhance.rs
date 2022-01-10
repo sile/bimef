@@ -38,17 +38,17 @@ fn main() -> anyhow::Result<()> {
     let image = image.to_rgb_f64();
 
     let start = std::time::Instant::now();
-    let image = bimef.enhance(image);
+    let enhanced_image = bimef.enhance(image);
     eprintln!("Elapsed: {:?}", start.elapsed());
 
-    // let mut encoder = png::Encoder::new(
-    //     std::io::BufWriter::new(std::fs::File::create(opt.output_path)?),
-    //     enhanced_image.width as u32,
-    //     enhanced_image.height as u32,
-    // );
-    // encoder.set_color(png::ColorType::Rgb);
-    // encoder.set_depth(png::BitDepth::Eight);
-    // let mut writer = encoder.write_header()?;
-    // writer.write_image_data(&enhanced_image.to_bytes())?;
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(std::fs::File::create(opt.output_path)?),
+        enhanced_image.width as u32,
+        enhanced_image.height as u32,
+    );
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&enhanced_image.to_bytes())?;
     Ok(())
 }
