@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 #[derive(Debug)]
 pub struct Bimef {
     /// Enhancement ratio.
@@ -48,8 +50,8 @@ impl Bimef {
         wy: &IlluminationMap,
         lamb: f64,
     ) {
-        let r = im.y_len();
-        let c = im.x_len();
+        let r = im.y_len() as isize;
+        let c = im.x_len() as isize;
         let k = r * c;
         let dx = wx.iter_f().map(|v| -lamb * v).collect::<Vec<_>>();
         let dy = wy.iter_f().map(|v| -lamb * v).collect::<Vec<_>>();
@@ -59,6 +61,18 @@ impl Bimef {
         let dyd1 = wy.iter_3y().map(|v| -lamb * v).collect::<Vec<_>>();
         let dxd2 = wx.iter_4x().map(|v| -lamb * v).collect::<Vec<_>>();
         let dyd2 = wy.iter_4y().map(|v| -lamb * v).collect::<Vec<_>>();
+
+        let ax = SparseMatrix::from_diags([(dxd1, -k + r), (dxd2, -r)].into_iter(), k as usize);
+        let ay = SparseMatrix::from_diags([(dyd1, -r + 1), (dyd2, -1)].into_iter(), k as usize);
+
+        let mut d = Vec::with_capacity(dx.len());
+        for i in 0..dx.len() {
+            d.push(1.0 - (dx[i] + dy[i] + dxa[i] + dya[i]));
+        }
+
+        let axy = ax.add(ay);
+        let axy_t = axy.t();
+        let a = axy.add(axy_t.add(SparseMatrix::from_diag(d)));
     }
 
     fn compute_texture_weights(
@@ -77,6 +91,56 @@ impl Bimef {
         gauker_h.calc_weights(&dt0_h, sharpness);
 
         (gauker_h, gauker_v)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SparseMatrix {
+    size: usize,
+    matrix: HashMap<(usize, usize), f64>,
+}
+
+impl SparseMatrix {
+    pub fn from_diags(diags: impl Iterator<Item = (Vec<f64>, isize)>, size: usize) -> Self {
+        let mut matrix = HashMap::new();
+        for (vs, offset) in diags {
+            for (x, v) in vs.iter().copied().enumerate() {
+                let y = x as isize - offset;
+                if y >= 0 && (y as usize) < size {
+                    matrix.insert((y as usize, x), v);
+                } else {
+                    // TODO: break if possible
+                }
+            }
+        }
+        Self { size, matrix }
+    }
+
+    pub fn from_diag(diag: Vec<f64>) -> Self {
+        let size = diag.len();
+        let mut matrix = HashMap::new();
+        for (i, v) in diag.into_iter().enumerate() {
+            matrix.insert((i, i), v);
+        }
+        Self { size, matrix }
+    }
+
+    pub fn t(&self) -> Self {
+        Self {
+            size: self.size,
+            matrix: self
+                .matrix
+                .iter()
+                .map(|(&(y, x), &v)| ((x, y), v))
+                .collect(),
+        }
+    }
+
+    pub fn add(mut self, rhs: Self) -> Self {
+        for (k, v) in rhs.matrix.into_iter() {
+            *self.matrix.entry(k).or_default() += v;
+        }
+        self
     }
 }
 
