@@ -31,16 +31,98 @@ impl Bimef {
 
         let im = IlluminationMap::new(&image);
 
-        // TODO: resize
-        self.tsmooth(&im, lamb, sigma);
+        // TODO: resize 0.5 => tsmooth => resize 2
+        let t_our = self.tsmooth(&im, lamb, sigma);
+
+        let j = if self.k.is_none() {
+            let is_bad = t_our.iter().map(|&v| v < 0.5).collect::<Vec<_>>();
+            self.max_entropy_enhance(&image, &is_bad)
+        } else {
+            todo!()
+        };
+
+        // Weight matrix.
+
+        // # W: Weight Matrix
+        // t = np.tile(np.expand_dims(t_our, axis=2), (1, 1, I.shape[2]))  # tolerance 1e-14
+        // W = t ** mu  # tolerance 1e-14
+        // I2 = I * W  # tolerance 1e-14
+        // J2 = J * (1.0-W)  # tolerance 1e-7
+        // fused = I2 + J2  # tolerance of 1e-6
+        //
+        // fused[fused > 1] = 1  # fix overflow
+        // fused[fused < 0] = 0  # fix underflow
+        // fused = (255*fused + 0.5).astype(np.uint8)  # convert double img to uint8
 
         image
     }
 
-    fn tsmooth(&self, im: &IlluminationMap, lamb: f64, sigma: f64) {
+    fn max_entropy_enhance(&self, image: &Image<Rgb<f64>>, is_bad: &[bool]) -> Vec<f64> {
+        // TODO: resize 50x50
+        let y = image.to_gray();
+        let y = y
+            .pixels
+            .iter()
+            .copied()
+            .zip(is_bad.iter().copied())
+            .filter(|x| x.1)
+            .map(|x| x.0)
+            .collect::<Vec<_>>();
+
+        struct FindNegativeEntropy {
+            y: Vec<f64>,
+        }
+
+        impl FindNegativeEntropy {
+            fn apply(&self, k: f64) -> f64 {
+                let applied_k = apply_k(&self.y, k);
+                let int_applied_k = applied_k
+                    .into_iter()
+                    .map(|v| (v.max(0.0).min(1.0) * 255.0).round() as u8)
+                    .collect::<Vec<_>>();
+                let mut hist = HashMap::<u8, f64>::new();
+                for v in int_applied_k {
+                    *hist.entry(v).or_default() += 1.0;
+                }
+                for v in hist.values_mut() {
+                    *v /= self.y.len() as f64;
+                }
+                let negative_entropy = hist.values().map(|&v| v * v.log2()).sum::<f64>();
+                negative_entropy
+            }
+        }
+
+        let mut optim =
+            tpe::TpeOptimizer::new(tpe::parzen_estimator(), tpe::range(1.0, 7.9).unwrap());
+
+        let mut best_value = std::f64::INFINITY;
+        let mut best_k = 1.0;
+        let mut rng = rand::thread_rng();
+        let problem = FindNegativeEntropy { y };
+        for i in 0..500 {
+            let k = optim.ask(&mut rng).unwrap();
+            let v = problem.apply(k);
+            optim.tell(k, v).unwrap();
+            let do_break = i > 5 && (best_value.abs() - v.abs()) < 1.0e-5;
+            if v < best_value {
+                best_value = v;
+                best_k = k;
+            }
+            if do_break {
+                break;
+            }
+        }
+
+        apply_k(&problem.y, best_k)
+            .into_iter()
+            .map(|v| v - 0.01)
+            .collect()
+    }
+
+    fn tsmooth(&self, im: &IlluminationMap, lamb: f64, sigma: f64) -> Vec<f64> {
         let sharpness = 0.001;
         let (wx, wy) = self.compute_texture_weights(im, sigma, sharpness);
-        self.solve_linear_equation(im, &wx, &wy, lamb);
+        self.solve_linear_equation(im, &wx, &wy, lamb)
     }
 
     fn solve_linear_equation(
@@ -49,7 +131,7 @@ impl Bimef {
         wx: &IlluminationMap,
         wy: &IlluminationMap,
         lamb: f64,
-    ) {
+    ) -> Vec<f64> {
         let r = im.y_len() as isize;
         let c = im.x_len() as isize;
         let k = r * c;
@@ -73,13 +155,11 @@ impl Bimef {
         let axy = ax.add(ay);
         let axy_t = axy.t();
         let a = axy.add(axy_t.add(SparseMatrix::from_diag(d)));
-        a.print();
 
         let tin = im.iter_f().collect::<Vec<_>>();
         let factor = a.cholesky(false);
-        println!("TIN: {:?}", tin);
         let tout = factor.solve(&tin);
-        println!("{:?}", tout);
+        tout
     }
 
     fn compute_texture_weights(
@@ -444,12 +524,22 @@ impl IlluminationMap {
     }
 }
 
+pub fn apply_k(xs: &[f64], k: f64) -> Vec<f64> {
+    let a = -0.3293;
+    let b = 1.1258;
+    let beta = ((1.0 - k.powf(a)) * b).exp();
+    let gamma = k.powf(a);
+    xs.iter().map(|p| p.powf(gamma) * beta).collect()
+}
+
 #[derive(Debug)]
 pub struct Image<T> {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<T>,
 }
+
+impl Image<f64> {}
 
 impl Image<Rgb<u8>> {
     pub fn from_bytes(width: u32, height: u32, bytes: &[u8]) -> Self {
@@ -482,6 +572,20 @@ impl Image<Rgb<u8>> {
     }
 }
 
+impl Image<Rgb<f64>> {
+    pub fn to_gray(&self) -> Image<f64> {
+        Image {
+            width: self.width,
+            height: self.height,
+            pixels: self
+                .pixels
+                .iter()
+                .map(|p| (p.r * p.g * p.b).powf(1.0 / 3.0))
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Rgb<T = u8> {
     pub r: T,
@@ -503,219 +607,5 @@ impl Rgb<u8> {
 impl Rgb<f64> {
     pub fn max_value(&self) -> f64 {
         self.r.max(self.g.max(self.b))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cholesky_works() {
-        let a = [[4., 12., -16.], [12., 37., -43.], [-16., -43., 98.]];
-        let mut m = SparseMatrix {
-            size: 3,
-            matrix: Default::default(),
-        };
-        for y in 0..3 {
-            for x in 0..3 {
-                m.matrix.insert((y, x), a[y][x]);
-            }
-        }
-
-        let f = m.cholesky();
-        let l = f.lu_l();
-        for y in 0..3 {
-            for x in 0..3 {
-                print!("{} ", l.get(&(y, x)).copied().unwrap_or(0.0));
-            }
-            println!();
-        }
-
-        println!("---------");
-        println!("{:?}", f.solve(&[4.0, 13.0, -11.0]));
-        // assert!(false);
-    }
-
-    #[test]
-    fn ndarray_linalg() {
-        use ndarray_linalg::cholesky::*;
-
-        let a: ndarray::Array2<f64> = ndarray::array![
-            [
-                1003.0038505363246,
-                -500.0,
-                0.0,
-                -500.0,
-                -1.0019252681623512,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                -1.0019252681623512,
-                0.0,
-                0.0,
-                0.0,
-            ],
-            [
-                -500.0,
-                1003.0038505363246,
-                -500.0,
-                0.0,
-                0.0,
-                -1.0019252681623512,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                -1.0019252681623512,
-                0.0,
-                0.0,
-            ],
-            [
-                0.0, -500.0, 2001.0, -500.0, 0.0, 0.0, -500.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                -500.0, 0.0,
-            ],
-            [
-                -500.0, 0.0, -500.0, 2001.0, 0.0, 0.0, 0.0, -500.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                0.0, -500.0,
-            ],
-            [
-                -1.0019252681623512,
-                0.0,
-                0.0,
-                0.0,
-                1502.0019252681623,
-                -500.0,
-                0.0,
-                -500.0,
-                -500.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-            [
-                0.0,
-                -1.0019252681623512,
-                0.0,
-                0.0,
-                -500.0,
-                1502.0019252681623,
-                -500.0,
-                0.0,
-                0.0,
-                -500.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-            ],
-            [
-                0.0, 0.0, -500.0, 0.0, 0.0, -500.0, 2001.0, -500.0, 0.0, 0.0, -500.0, 0.0, 0.0,
-                0.0, 0.0, 0.0,
-            ],
-            [
-                0.0, 0.0, 0.0, -500.0, -500.0, 0.0, -500.0, 2001.0, 0.0, 0.0, 0.0, -500.0, 0.0,
-                0.0, 0.0, 0.0,
-            ],
-            [
-                0.0, 0.0, 0.0, 0.0, -500.0, 0.0, 0.0, 0.0, 2001.0, -500.0, 0.0, -500.0, -500.0,
-                0.0, 0.0, 0.0,
-            ],
-            [
-                0.0, 0.0, 0.0, 0.0, 0.0, -500.0, 0.0, 0.0, -500.0, 2001.0, -500.0, 0.0, 0.0,
-                -500.0, 0.0, 0.0,
-            ],
-            [
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -500.0, 0.0, 0.0, -500.0, 2001.0, -500.0, 0.0, 0.0,
-                -500.0, 0.0,
-            ],
-            [
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -500.0, -500.0, 0.0, -500.0, 2001.0, 0.0, 0.0,
-                0.0, -500.0,
-            ],
-            [
-                -1.0019252681623512,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                -500.0,
-                0.0,
-                0.0,
-                0.0,
-                1502.0019252681623,
-                -500.0,
-                0.0,
-                -500.0,
-            ],
-            [
-                0.0,
-                -1.0019252681623512,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                -500.0,
-                0.0,
-                0.0,
-                -500.0,
-                1502.0019252681623,
-                -500.0,
-                0.0,
-            ],
-            [
-                0.0, 0.0, -500.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -500.0, 0.0, 0.0, -500.0,
-                2001.0, -500.0,
-            ],
-            [
-                0.0, 0.0, 0.0, -500.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -500.0, -500.0, 0.0,
-                -500.0, 2001.0,
-            ],
-        ];
-
-        let lower = a.cholesky(ndarray_linalg::cholesky::UPLO::Lower).unwrap();
-        println!("{:?}", lower);
-        println!();
-
-        let b = ndarray::array![
-            0.0,
-            0.0,
-            0.6941176470588235,
-            0.9019607843137255,
-            0.4980392156862745,
-            0.4980392156862745,
-            0.6941176470588235,
-            0.9019607843137255,
-            0.5333333333333333,
-            0.5333333333333333,
-            0.6941176470588235,
-            0.9019607843137255,
-            1.0,
-            1.0,
-            0.6941176470588235,
-            0.9019607843137255
-        ];
-        let x = a.solvec(&b).unwrap();
-        println!("{:?}", x);
-        assert!(false);
     }
 }
