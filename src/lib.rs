@@ -97,7 +97,10 @@ impl Bimef {
 }
 
 #[derive(Debug, Clone)]
-pub struct Factor(SparseMatrix);
+pub struct Factor {
+    d: Vec<f64>,
+    l: HashMap<(usize, usize), f64>,
+}
 
 #[derive(Debug, Clone)]
 pub struct SparseMatrix {
@@ -142,44 +145,45 @@ impl SparseMatrix {
     }
 
     // https://en.wikipedia.org/wiki/Incomplete_Cholesky_factorization
-    pub fn cholesky(mut self) -> Factor {
-        // TODO: optimize
+    pub fn cholesky(self) -> Factor {
         let n = self.size;
-        for k in 0..n {
-            let v0 = if let Some(v) = self.matrix.get_mut(&(k, k)) {
-                *v = v.sqrt();
-                *v
-            } else {
-                0.0
-            };
+        let mut d = vec![self.get(0, 0)];
+        let mut l = HashMap::new();
 
-            for i in k + 1..n {
-                if let Some(v) = self.matrix.get_mut(&(i, k)) {
-                    if *v != 0.0 {
-                        *v /= v0;
-                    }
+        fn get(m: &HashMap<(usize, usize), f64>, y: usize, x: usize) -> f64 {
+            m.get(&(y, x)).copied().unwrap_or(0.0)
+        }
+
+        l.insert((0, 0), 1.0);
+
+        for i in 1..n {
+            // i < k
+            for j in 0..i {
+                if self.get(i, j).abs() < 1.0e-10 {
+                    continue;
+                }
+
+                let mut lld = self.get(i, j);
+                for k in 0..j {
+                    lld -= get(&l, i, k) * get(&l, j, k) * d[k];
+                }
+
+                let v = 1.0 / d[j] * lld;
+                if v != 0.0 {
+                    l.insert((i, j), v);
                 }
             }
 
-            for j in k + 1..n {
-                for i in j..n {
-                    let v_ik = self.matrix.get(&(i, k)).copied().unwrap_or(0.0);
-                    let v_jk = self.matrix.get(&(j, k)).copied().unwrap_or(0.0);
-                    if let Some(v) = self.matrix.get_mut(&(i, j)) {
-                        if *v != 0.0 {
-                            *v -= v_ik * v_jk;
-                        }
-                    }
-                }
+            // i == k
+            let mut ld = self.get(i, i);
+            for k in 0..i {
+                ld -= get(&l, i, k) * get(&l, i, k) * d[k];
             }
-        }
-        for i in 0..n {
-            for j in i + 1..n {
-                self.matrix.remove(&(i, j));
-            }
+            d.push(ld);
+            l.insert((i, i), 1.0);
         }
 
-        Factor(self)
+        Factor { d, l }
     }
 
     pub fn add(mut self, rhs: Self) -> Self {
@@ -187,6 +191,10 @@ impl SparseMatrix {
             *self.matrix.entry(k).or_default() += v;
         }
         self
+    }
+
+    pub fn get(&self, y: usize, x: usize) -> f64 {
+        self.matrix.get(&(y, x)).copied().unwrap_or(0.0)
     }
 }
 
