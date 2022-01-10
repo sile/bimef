@@ -116,6 +116,7 @@ impl Bimef {
         let mut best_k = 1.0;
         let mut rng = rand::thread_rng();
         let problem = FindNegativeEntropy { y };
+        let start = std::time::Instant::now();
         for i in 0..500 {
             let k = optim.ask(&mut rng).unwrap();
             let v = problem.apply(k);
@@ -126,9 +127,11 @@ impl Bimef {
                 best_k = k;
             }
             if do_break {
+                println!("break: {}", i);
                 break;
             }
         }
+        println!("Optimized: {:?}", start.elapsed());
 
         image.apply_k(best_k)
     }
@@ -171,7 +174,11 @@ impl Bimef {
         let a = axy.add(axy_t.add(SparseMatrix::from_diag(d)));
 
         let tin = im.iter_f().collect::<Vec<_>>();
-        let factor = a.cholesky(false);
+
+        let start = std::time::Instant::now();
+        let factor = a.cholesky();
+        println!("Cholesky: {:?}", start.elapsed());
+
         let tout = factor.solve(&tin);
         tout
     }
@@ -299,7 +306,8 @@ impl SparseMatrix {
         }
     }
 
-    pub fn cholesky(self, incomplete: bool) -> Factor {
+    // incomplete cholesky decomposition
+    pub fn cholesky(&self) -> Factor {
         let n = self.size;
         let mut d = vec![self.get(0, 0)];
         let mut l = HashMap::new();
@@ -313,7 +321,7 @@ impl SparseMatrix {
         for i in 1..n {
             // i < k
             for j in 0..i {
-                if incomplete && self.get(i, j).abs() < 1.0e-10 {
+                if self.get(i, j).abs() < 1.0e-10 {
                     continue;
                 }
 
@@ -613,6 +621,7 @@ impl Image<Rgb<u8>> {
 }
 
 impl Image<Rgb<f64>> {
+    // brightness component.
     pub fn to_gray(&self) -> Image<f64> {
         Image {
             width: self.width,
