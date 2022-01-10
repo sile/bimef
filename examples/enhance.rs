@@ -3,7 +3,7 @@ use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
-    #[structopt(default_value = "examples/test.png")]
+    #[structopt(default_value = "examples/test-small.png")]
     image_path: PathBuf,
     #[structopt(default_value = "examples/enhanced.png")]
     output_path: PathBuf,
