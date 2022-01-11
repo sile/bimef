@@ -36,6 +36,9 @@ impl Bimef {
 
         let j = if self.k.is_none() {
             let is_bad = t_our.iter().map(|&v| v < 0.5).collect::<Vec<_>>();
+            let bads = is_bad.iter().copied().filter(|&b| b).count();
+            let goods = is_bad.len() - bads;
+            dbg!((goods, bads));
             self.max_entropy_enhance(&image, &is_bad)
         } else {
             todo!()
@@ -181,7 +184,7 @@ impl Bimef {
         println!("Cholesky: {:?}", start.elapsed());
 
         let start = std::time::Instant::now();
-        let tout = factor.solve(&tin);
+        let tout = factor.solve(&a, &tin);
         println!("Solve: {:?}", start.elapsed());
 
         tout
@@ -212,43 +215,81 @@ pub struct Factor {
 }
 
 impl Factor {
-    pub fn solve(&self, b: &[f64]) -> Vec<f64> {
-        let l = self.lu_l();
-        let u = self.lu_u();
-
-        fn get(m: &BTreeMap<(usize, usize), f64>, y: usize, x: usize) -> f64 {
-            m.get(&(y, x)).copied().unwrap_or(0.0)
-        }
-
-        let mut x = Vec::new();
+    // ICCGSolver
+    pub fn solve(&self, a: &SparseMatrix, b: &[f64]) -> Vec<f64> {
         let n = self.d.len();
+        let mut x = vec![0.0; n];
+        let mut r = b.to_owned();
 
-        // Forward substitution.
-        for i in 0..n {
-            let mut bly = b[i];
-            for (&(_, j), &v) in l.range((i, 0)..(i, i)) {
-                bly -= v * x[j];
-            }
-            x.push(bly / get(&l, i, i));
+        let lu_u = self.lu_u();
+        let mut p = vec![0.0; n];
+        self.icres(&lu_u, &r, &mut p);
+
+        fn dot(a: &[f64], b: &[f64]) -> f64 {
+            a.iter()
+                .copied()
+                .zip(b.iter().copied())
+                .map(|(a, b)| a + b)
+                .sum::<f64>()
         }
 
-        // Backword substitution.
-        for i in (0..n).rev() {
-            let mut yux = x[i];
-            for (&(_, j), &v) in u.range((i, i + 1)..(i, n)) {
-                yux -= v * x[j];
+        let mut r2 = vec![0.0; n];
+        let mut rr0 = dot(&r, &p);
+        let max_iter = 10; //0;
+        let eps = 0.001;
+        let mut y = vec![0.0; n];
+
+        for k in 0..max_iter {
+            // y = AP
+            for i in 0..n {
+                y[i] = a.dot(i, &p);
             }
-            x[i] = yux;
+
+            let alpha = rr0 / dot(&p, &y);
+            for i in 0..n {
+                x[i] += alpha * p[i];
+                r[i] -= alpha * y[i];
+            }
+
+            self.icres(&lu_u, &r, &mut r2);
+            let rr1 = dot(&r, &r2);
+
+            let e = rr1.sqrt();
+            dbg!(e);
+            if e < eps {
+                dbg!((k, e));
+                break;
+            }
+
+            let beta = rr1 / rr0;
+            for i in 0..n {
+                p[i] = r2[i] + beta * p[i];
+            }
+
+            rr0 = rr1;
         }
 
         x
     }
 
-    fn lu_l(&self) -> BTreeMap<(usize, usize), f64> {
-        self.l
-            .iter()
-            .map(|(&(y, x), &v)| ((y, x), v * self.d[x]))
-            .collect()
+    fn icres(&self, lu_u: &BTreeMap<(usize, usize), f64>, r: &[f64], u: &mut [f64]) {
+        let n = self.d.len();
+        let mut y = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut rly = r[i];
+            for (&(_, j), &v) in self.l.range((i, 0)..(i, i)) {
+                rly -= v * y[j];
+            }
+            y.push(rly);
+        }
+
+        for i in (0..n).rev() {
+            let mut lu = 0.0;
+            for (&(_, j), &v) in lu_u.range((i, i + 1)..(i, n)) {
+                lu += v * u[j];
+            }
+            u[i] = y[i] - self.d[i] * lu;
+        }
     }
 
     fn lu_u(&self) -> BTreeMap<(usize, usize), f64> {
@@ -263,6 +304,13 @@ pub struct SparseMatrix {
 }
 
 impl SparseMatrix {
+    pub fn dot(&self, y: usize, rhs: &[f64]) -> f64 {
+        self.matrix
+            .range((y, 0)..(y, self.size))
+            .map(|(&(_, x), &v)| v * rhs[x])
+            .sum::<f64>()
+    }
+
     pub fn print(&self) {
         println!("[");
         for y in 0..self.size {
@@ -672,5 +720,30 @@ impl Rgb<u8> {
 impl Rgb<f64> {
     pub fn max_value(&self) -> f64 {
         self.r.max(self.g.max(self.b))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cholesky_works() {
+        let a = [[4., 0.0, 0.0], [12., 37., 0.0], [-16., -43., 98.]];
+        let mut m = SparseMatrix {
+            size: 3,
+            matrix: Default::default(),
+        };
+        for y in 0..3 {
+            for x in 0..3 {
+                if a[y][x] != 0.0 {
+                    m.matrix.insert((y, x), a[y][x]);
+                }
+            }
+        }
+
+        let f = m.cholesky();
+        println!("{:?}", f.solve(&m, &[4.0, 13.0, -11.0]));
+        assert!(false);
     }
 }
