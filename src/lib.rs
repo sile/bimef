@@ -1,3 +1,4 @@
+use pcgs::sparse_symmetric_matrix::{Entry, SparseSymmetricMatrix};
 use std::collections::BTreeMap;
 
 #[derive(Debug)]
@@ -35,6 +36,8 @@ impl Bimef {
         let t_our = self.tsmooth(&im, lamb, sigma);
 
         let j = if self.k.is_none() {
+            dbg!(t_our.iter().take(10).collect::<Vec<_>>());
+
             let is_bad = t_our.iter().map(|&v| v < 0.5).collect::<Vec<_>>();
             let bads = is_bad.iter().copied().filter(|&b| b).count();
             let goods = is_bad.len() - bads;
@@ -180,12 +183,26 @@ impl Bimef {
         let tin = im.iter_f().collect::<Vec<_>>();
 
         let start = std::time::Instant::now();
-        let factor = a.cholesky();
-        println!("Cholesky: {:?}", start.elapsed());
+        let m = SparseSymmetricMatrix::new(
+            &a.matrix
+                .iter()
+                .map(|(&(y, x), &v)| e(y, x, v))
+                .collect::<Vec<_>>(),
+        );
 
-        let start = std::time::Instant::now();
-        let tout = factor.solve(&a, &tin);
-        println!("Solve: {:?}", start.elapsed());
+        let r = pcgs::solver::solver(&m, &pcgs::vector::Vector(tin));
+        dbg!(r.completed);
+        dbg!(r.iterations);
+        let tout = r.best_guess.0;
+        println!("pcgs: {:?}", start.elapsed());
+
+        // let start = std::time::Instant::now();
+        // let factor = a.cholesky();
+        // println!("Cholesky: {:?}", start.elapsed());
+
+        // let start = std::time::Instant::now();
+        // let tout = factor.solve(&a, &tin);
+        // println!("Solve: {:?}", start.elapsed());
 
         tout
     }
@@ -236,8 +253,8 @@ impl Factor {
 
         let mut r2 = vec![0.0; n];
         let mut rr0 = dot(&r, &p);
-        let max_iter = 20;
-        let eps = 0.001;
+        let max_iter = 50;
+        let eps = 0.1;
         let mut y = vec![0.0; n];
 
         for k in 0..max_iter {
@@ -256,7 +273,7 @@ impl Factor {
             let rr1 = dot(&r, &r2);
 
             let e = rr1.sqrt();
-            dbg!((rr1, e));
+            dbg!((k, rr1, e));
             if e < eps {
                 dbg!((k, e));
                 break;
@@ -754,6 +771,10 @@ impl Rgb<f64> {
     }
 }
 
+fn e(y: usize, x: usize, v: f64) -> Entry {
+    Entry { y, x, v }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,7 +795,32 @@ mod tests {
         }
 
         let f = m.cholesky();
+
+        dbg!(&f.d);
+        dbg!(&f.l);
+        // [L]
+        // 4, 0, 0,
+        // 12, 1, 0,
+        // -16, 5, 9,
+
+        // [d]
+        // 0.25, 1, 0.111111,
+
         println!("{:?}", f.solve(&m, &[4.0, 13.0, -11.0]));
+
+        let m = SparseSymmetricMatrix::new(&vec![
+            e(0, 0, 4.0),
+            e(1, 0, 12.0),
+            e(2, 0, -16.0),
+            e(1, 1, 37.0),
+            e(2, 1, -43.0),
+            e(2, 2, 98.0),
+        ]);
+
+        let r = pcgs::solver::solver(&m, &pcgs::vector::Vector(vec![4.0, 13.0, -11.0]));
+        dbg!(r.completed);
+        dbg!(r.iterations);
+        dbg!(r.best_guess.0);
         assert!(false);
     }
 }
