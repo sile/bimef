@@ -226,16 +226,17 @@ impl Factor {
         self.icres(&lu_u, &r, &mut p);
 
         fn dot(a: &[f64], b: &[f64]) -> f64 {
+            assert_eq!(a.len(), b.len());
             a.iter()
                 .copied()
                 .zip(b.iter().copied())
-                .map(|(a, b)| a + b)
+                .map(|(a, b)| a * b)
                 .sum::<f64>()
         }
 
         let mut r2 = vec![0.0; n];
         let mut rr0 = dot(&r, &p);
-        let max_iter = 10; //0;
+        let max_iter = 20;
         let eps = 0.001;
         let mut y = vec![0.0; n];
 
@@ -255,7 +256,7 @@ impl Factor {
             let rr1 = dot(&r, &r2);
 
             let e = rr1.sqrt();
-            dbg!(e);
+            dbg!((rr1, e));
             if e < eps {
                 dbg!((k, e));
                 break;
@@ -280,7 +281,7 @@ impl Factor {
             for (&(_, j), &v) in self.l.range((i, 0)..(i, i)) {
                 rly -= v * y[j];
             }
-            y.push(rly);
+            y.push(rly / self.l[&(i, i)]);
         }
 
         for i in (0..n).rev() {
@@ -362,40 +363,70 @@ impl SparseMatrix {
 
     // incomplete cholesky decomposition
     pub fn cholesky(&self) -> Factor {
-        dbg!(self.matrix.len());
         let mut d = Vec::new();
-        let mut l = BTreeMap::new();
+        let mut l = BTreeMap::<(usize, usize), f64>::new();
 
         for (&(i, j), &v) in &self.matrix {
-            if i == j {
-                let mut ld = v;
-                for (&(_, k), &v) in l.range((i, 0)..(i, i)) {
-                    ld -= v * v * d[k];
+            let mut lld = v;
+            let mut vs_i = l.range((i, 0)..(i, j)).peekable();
+            let mut vs_j = l.range((j, 0)..(j, j)).peekable();
+            while vs_i.peek().is_some() && vs_j.peek().is_some() {
+                let k_i = vs_i.peek().unwrap().0 .1;
+                let k_j = vs_j.peek().unwrap().0 .1;
+                if k_i == k_j {
+                    lld -= vs_i.next().unwrap().1 * vs_j.next().unwrap().1 * d[k_i];
+                } else if k_i < k_j {
+                    vs_i.next();
+                } else {
+                    vs_j.next();
                 }
-                d.push(ld);
-                l.insert((i, i), 1.0);
-            } else {
-                let mut lld = v;
-                let mut vs_i = l.range((i, 0)..(i, j)).peekable();
-                let mut vs_j = l.range((j, 0)..(j, j)).peekable();
-                while vs_i.peek().is_some() && vs_j.peek().is_some() {
-                    let k_i = vs_i.peek().unwrap().0 .1;
-                    let k_j = vs_j.peek().unwrap().0 .1;
-                    if k_i == k_j {
-                        lld -= vs_i.next().unwrap().1 * vs_j.next().unwrap().1 * d[k_i];
-                    } else if k_i < k_j {
-                        vs_i.next();
-                    } else {
-                        vs_j.next();
-                    }
-                }
+            }
+            l.insert((i, j), lld);
 
-                l.insert((i, j), 1.0 / d[j] * lld);
+            if i == j {
+                d.push(1.0 / l[&(i, i)]);
             }
         }
+        assert_eq!(d.len(), self.size);
 
         Factor { d, l }
     }
+
+    // pub fn cholesky(&self) -> Factor {
+    //     dbg!(self.matrix.len());
+    //     let mut d = Vec::new();
+    //     let mut l = BTreeMap::new();
+
+    //     for (&(i, j), &v) in &self.matrix {
+    //         if i == j {
+    //             let mut ld = v;
+    //             for (&(_, k), &v) in l.range((i, 0)..(i, i)) {
+    //                 ld -= v * v * d[k];
+    //             }
+    //             d.push(ld);
+    //             l.insert((i, i), 1.0);
+    //         } else {
+    //             let mut lld = v;
+    //             let mut vs_i = l.range((i, 0)..(i, j)).peekable();
+    //             let mut vs_j = l.range((j, 0)..(j, j)).peekable();
+    //             while vs_i.peek().is_some() && vs_j.peek().is_some() {
+    //                 let k_i = vs_i.peek().unwrap().0 .1;
+    //                 let k_j = vs_j.peek().unwrap().0 .1;
+    //                 if k_i == k_j {
+    //                     lld -= vs_i.next().unwrap().1 * vs_j.next().unwrap().1 * d[k_i];
+    //                 } else if k_i < k_j {
+    //                     vs_i.next();
+    //                 } else {
+    //                     vs_j.next();
+    //                 }
+    //             }
+
+    //             l.insert((i, j), 1.0 / d[j] * lld);
+    //         }
+    //     }
+
+    //     Factor { d, l }
+    // }
 
     pub fn add(mut self, rhs: Self) -> Self {
         for (k, v) in rhs.matrix.into_iter() {
