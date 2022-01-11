@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[derive(Debug)]
 pub struct Bimef {
@@ -97,7 +97,7 @@ impl Bimef {
                     .into_iter()
                     .map(|v| (v.max(0.0).min(1.0) * 255.0).round() as u8)
                     .collect::<Vec<_>>();
-                let mut hist = HashMap::<u8, f64>::new();
+                let mut hist = BTreeMap::<u8, f64>::new();
                 for v in int_applied_k {
                     *hist.entry(v).or_default() += 1.0;
                 }
@@ -121,7 +121,7 @@ impl Bimef {
             let k = optim.ask(&mut rng).unwrap();
             let v = problem.apply(k);
             optim.tell(k, v).unwrap();
-            let do_break = i > 5 && (best_value.abs() - v.abs()) < 1.0e-5;
+            let do_break = i > 50 && (best_value.abs() - v.abs()) < 1.0e-5;
             if v < best_value {
                 best_value = v;
                 best_k = k;
@@ -170,8 +170,9 @@ impl Bimef {
         }
 
         let axy = ax.add(ay);
-        let axy_t = axy.t();
-        let a = axy.add(axy_t.add(SparseMatrix::from_diag(d)));
+        // let axy_t = axy.t();
+        // let a = axy.add(axy_t.add(SparseMatrix::from_diag(d)));
+        let a = axy.add(SparseMatrix::from_diag(d));
 
         let tin = im.iter_f().collect::<Vec<_>>();
 
@@ -204,7 +205,7 @@ impl Bimef {
 #[derive(Debug, Clone)]
 pub struct Factor {
     d: Vec<f64>,
-    l: HashMap<(usize, usize), f64>,
+    l: BTreeMap<(usize, usize), f64>,
 }
 
 impl Factor {
@@ -212,7 +213,7 @@ impl Factor {
         let l = self.lu_l();
         let u = self.lu_u();
 
-        fn get(m: &HashMap<(usize, usize), f64>, y: usize, x: usize) -> f64 {
+        fn get(m: &BTreeMap<(usize, usize), f64>, y: usize, x: usize) -> f64 {
             m.get(&(y, x)).copied().unwrap_or(0.0)
         }
 
@@ -240,14 +241,14 @@ impl Factor {
         x
     }
 
-    fn lu_l(&self) -> HashMap<(usize, usize), f64> {
+    fn lu_l(&self) -> BTreeMap<(usize, usize), f64> {
         self.l
             .iter()
             .map(|(&(y, x), &v)| ((y, x), v * self.d[x]))
             .collect()
     }
 
-    fn lu_u(&self) -> HashMap<(usize, usize), f64> {
+    fn lu_u(&self) -> BTreeMap<(usize, usize), f64> {
         self.l.iter().map(|(&(y, x), &v)| ((x, y), v)).collect()
     }
 }
@@ -255,7 +256,7 @@ impl Factor {
 #[derive(Debug, Clone)]
 pub struct SparseMatrix {
     size: usize,
-    matrix: HashMap<(usize, usize), f64>,
+    matrix: BTreeMap<(usize, usize), f64>,
 }
 
 impl SparseMatrix {
@@ -272,12 +273,14 @@ impl SparseMatrix {
     }
 
     pub fn from_diags(diags: impl Iterator<Item = (Vec<f64>, isize)>, size: usize) -> Self {
-        let mut matrix = HashMap::new();
+        let mut matrix = BTreeMap::new();
         for (vs, offset) in diags {
             for (x, v) in vs.iter().copied().enumerate() {
                 let y = x as isize - offset;
                 if y >= 0 && (y as usize) < size {
-                    matrix.insert((y as usize, x), v);
+                    if v != 0.0 {
+                        matrix.insert((y as usize, x), v);
+                    }
                 } else {
                     // TODO: break if possible
                 }
@@ -288,7 +291,7 @@ impl SparseMatrix {
 
     pub fn from_diag(diag: Vec<f64>) -> Self {
         let size = diag.len();
-        let mut matrix = HashMap::new();
+        let mut matrix = BTreeMap::new();
         for (i, v) in diag.into_iter().enumerate() {
             matrix.insert((i, i), v);
         }
@@ -308,38 +311,36 @@ impl SparseMatrix {
 
     // incomplete cholesky decomposition
     pub fn cholesky(&self) -> Factor {
-        let n = self.size;
-        let mut d = vec![self.get(0, 0)];
-        let mut l = HashMap::new();
+        dbg!(self.matrix.len());
+        let mut d = Vec::new();
+        let mut l = BTreeMap::new();
 
-        fn get(m: &HashMap<(usize, usize), f64>, y: usize, x: usize) -> f64 {
-            m.get(&(y, x)).copied().unwrap_or(0.0)
-        }
-
-        l.insert((0, 0), 1.0);
-
-        for i in 1..n {
-            // i < k
-            for j in 0..i {
-                if self.get(i, j).abs() < 1.0e-10 {
-                    continue;
+        for (&(i, j), &v) in &self.matrix {
+            if i == j {
+                let mut ld = v;
+                for (&(_, k), &v) in l.range((i, 0)..(i, i)) {
+                    ld -= v * v * d[k];
                 }
-
-                let mut lld = self.get(i, j);
-                for k in 0..j {
-                    lld -= get(&l, i, k) * get(&l, j, k) * d[k];
+                d.push(ld);
+                l.insert((i, i), 1.0);
+            } else {
+                let mut lld = v;
+                let mut vs_i = l.range((i, 0)..(i, j)).peekable();
+                let mut vs_j = l.range((j, 0)..(j, j)).peekable();
+                while vs_i.peek().is_some() && vs_j.peek().is_some() {
+                    let k_i = vs_i.peek().unwrap().0 .1;
+                    let k_j = vs_j.peek().unwrap().0 .1;
+                    if k_i == k_j {
+                        lld -= vs_i.next().unwrap().1 * vs_j.next().unwrap().1 * d[k_i];
+                    } else if k_i < k_j {
+                        vs_i.next();
+                    } else {
+                        vs_j.next();
+                    }
                 }
 
                 l.insert((i, j), 1.0 / d[j] * lld);
             }
-
-            // i == k
-            let mut ld = self.get(i, i);
-            for k in 0..i {
-                ld -= get(&l, i, k) * get(&l, i, k) * d[k];
-            }
-            d.push(ld);
-            l.insert((i, i), 1.0);
         }
 
         Factor { d, l }
