@@ -180,7 +180,10 @@ impl Bimef {
         let factor = a.cholesky();
         println!("Cholesky: {:?}", start.elapsed());
 
+        let start = std::time::Instant::now();
         let tout = factor.solve(&tin);
+        println!("Solve: {:?}", start.elapsed());
+
         tout
     }
 
@@ -223,8 +226,8 @@ impl Factor {
         // Forward substitution.
         for i in 0..n {
             let mut bly = b[i];
-            for j in 0..i {
-                bly -= get(&l, i, j) * x[j];
+            for (&(_, j), &v) in l.range((i, 0)..(i, i)) {
+                bly -= v * x[j];
             }
             x.push(bly / get(&l, i, i));
         }
@@ -232,8 +235,8 @@ impl Factor {
         // Backword substitution.
         for i in (0..n).rev() {
             let mut yux = x[i];
-            for j in i + 1..n {
-                yux -= get(&u, i, j) * x[j];
+            for (&(_, j), &v) in u.range((i, i + 1)..(i, n)) {
+                yux -= v * x[j];
             }
             x[i] = yux;
         }
