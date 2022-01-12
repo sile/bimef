@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 #[derive(Debug)]
 pub struct Bimef {
     /// Enhancement ratio.
@@ -24,20 +22,19 @@ impl Bimef {
     pub fn enhance(&self, image: Image<Rgb<f32>>) -> Image<Rgb<u8>> {
         let start = std::time::Instant::now();
 
-        let illumination_map = image.get_illumination_map();
-        println!("Elapsed(0): {:?}", start.elapsed());
-
-        let j = self.max_entropy_enhance(&image, &illumination_map);
+        let k = self.max_entropy_enhance(&image);
         println!("Elapsed(2): {:?}", start.elapsed());
 
+        let camera = CameraResponseModel::new(k);
+
         // Weight matrix.
-        let fused = image.map(|i, p0| {
-            let w = illumination_map[i].powf(self.mu);
+        let fused = image.map(|_, p0| {
+            let w = p0.illumination().powf(self.mu);
             let r0 = p0.r * w;
             let g0 = p0.g * w;
             let b0 = p0.b * w;
 
-            let p1 = j.pixels[i];
+            let p1 = camera.apply(&p0);
             let r1 = p1.r * (1.0 - w);
             let g1 = p1.g * (1.0 - w);
             let b1 = p1.b * (1.0 - w);
@@ -52,25 +49,16 @@ impl Bimef {
         fused
     }
 
-    fn max_entropy_enhance(
-        &self,
-        image: &Image<Rgb<f32>>,
-        illumination_map: &[f32],
-    ) -> Image<Rgb<f32>> {
-        // TODO: resize 50x50
-        let y = image.to_gray();
+    fn max_entropy_enhance(&self, image: &Image<Rgb<f32>>) -> f32 {
         let n = 50 * 50;
-        let m = std::cmp::max(1, y.pixels.len() / n);
-        let y = y
+        let m = std::cmp::max(1, image.pixels.len() / n);
+        let y = image
             .pixels
             .iter()
-            .copied()
-            .zip(illumination_map.iter().copied())
-            .filter(|x| x.1 < 0.5)
-            .map(|x| x.0)
+            .filter(|x| x.illumination() < 0.5)
             .enumerate()
             .filter(|x| x.0 % m == 0)
-            .map(|x| x.1)
+            .map(|x| x.1.gray())
             .collect::<Vec<_>>();
 
         struct FindNegativeEntropy {
@@ -79,19 +67,18 @@ impl Bimef {
 
         impl FindNegativeEntropy {
             fn apply(&self, k: f32) -> f32 {
-                let applied_k = apply_k(&self.y, k);
-                let int_applied_k = applied_k
+                let applied_k = apply_k(&self.y, k).map(|v| to_u8(v) as usize);
+                let mut hist = [0; 256];
+                for v in applied_k {
+                    hist[v] += 1;
+                }
+                let n = self.y.len();
+                let negative_entropy = hist
                     .into_iter()
-                    .map(|v| (v.max(0.0).min(1.0) * 255.0).round() as u8)
-                    .collect::<Vec<_>>();
-                let mut hist = BTreeMap::<u8, f32>::new();
-                for v in int_applied_k {
-                    *hist.entry(v).or_default() += 1.0;
-                }
-                for v in hist.values_mut() {
-                    *v /= self.y.len() as f32;
-                }
-                let negative_entropy = hist.values().map(|&v| v * v.log2()).sum::<f32>();
+                    .filter(|&v| v != 0)
+                    .map(|v| v as f32 / n as f32)
+                    .map(|v| v * v.log2())
+                    .sum::<f32>();
                 negative_entropy
             }
         }
@@ -118,18 +105,18 @@ impl Bimef {
                 break;
             }
         }
-        println!("Optimized: {:?}", start.elapsed());
+        println!("Optimized(k={}): {:?}", best_k, start.elapsed());
 
-        image.apply_k(best_k as f32)
+        best_k as f32
     }
 }
 
-pub fn apply_k(xs: &[f32], k: f32) -> Vec<f32> {
+pub fn apply_k(xs: &[f32], k: f32) -> impl '_ + Iterator<Item = f32> {
     let a = -0.3293;
     let b = 1.1258;
     let beta = ((1.0 - k.powf(a)) * b).exp();
     let gamma = k.powf(a);
-    xs.iter().map(|p| p.powf(gamma) * beta).collect()
+    xs.iter().map(move |p| p.powf(gamma) * beta)
 }
 
 #[derive(Debug)]
@@ -216,18 +203,6 @@ impl Image<Rgb<f32>> {
         // TODO: Vec<u8>
         self.pixels.iter().map(|p| p.max_value()).collect()
     }
-
-    pub fn apply_k(&self, k: f32) -> Self {
-        let a = -0.3293;
-        let b = 1.1258;
-        let beta = ((1.0 - k.powf(a)) * b).exp();
-        let gamma = k.powf(a);
-        self.map(|_, rgb| Rgb {
-            r: rgb.r.powf(gamma) * beta - 0.01,
-            g: rgb.g.powf(gamma) * beta - 0.01,
-            b: rgb.b.powf(gamma) * beta - 0.01,
-        })
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -252,8 +227,43 @@ impl Rgb<f32> {
     pub fn max_value(&self) -> f32 {
         self.r.max(self.g.max(self.b))
     }
+
+    pub fn illumination(&self) -> f32 {
+        self.max_value()
+    }
+
+    pub fn gray(&self) -> f32 {
+        (self.r * self.g * self.b).powf(1.0 / 3.0)
+    }
 }
 
 fn to_u8(v: f32) -> u8 {
     (v.max(0.0).min(1.0) * 255.0).round() as u8
+}
+
+#[derive(Debug)]
+pub struct CameraResponseModel {
+    beta: f32,
+    gamma: f32,
+}
+
+impl CameraResponseModel {
+    fn new(k: f32) -> Self {
+        let a = -0.3293;
+        let b = 1.1258;
+        let beta = ((1.0 - k.powf(a)) * b).exp();
+        let gamma = k.powf(a);
+
+        Self { beta, gamma }
+    }
+
+    fn apply(&self, rgb: &Rgb<f32>) -> Rgb<f32> {
+        let gamma = self.gamma;
+        let beta = self.beta;
+        Rgb {
+            r: rgb.r.powf(gamma) * beta - 0.01,
+            g: rgb.g.powf(gamma) * beta - 0.01,
+            b: rgb.b.powf(gamma) * beta - 0.01,
+        }
+    }
 }
