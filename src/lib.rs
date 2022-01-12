@@ -27,7 +27,6 @@ impl Bimef {
 
         let camera = CameraResponseModel::new(k);
 
-        // Weight matrix.
         let fused = image.map(|_, p0| {
             let w = p0.illumination().powf(self.mu);
             let r0 = p0.r * w;
@@ -57,7 +56,7 @@ impl Bimef {
             .iter()
             .filter(|x| x.illumination() < 0.5)
             .enumerate()
-            .filter(|x| x.0 % m == 0)
+            .filter(|x| x.0 % m == 0) // TODO: Move before the first filter()
             .map(|x| x.1.gray())
             .collect::<Vec<_>>();
 
@@ -91,21 +90,134 @@ impl Bimef {
         let mut rng = rand::thread_rng();
         let problem = FindNegativeEntropy { y };
         let start = std::time::Instant::now();
-        for i in 0..500 {
+
+        let mut low_param = 1.0;
+        let mut high_param = 7.9;
+        let mut middle_param = (high_param - low_param) / 2.0 + low_param;
+
+        let mut low_value = problem.apply(low_param);
+        let mut best_k = low_param;
+        let mut best_value = low_value;
+
+        let mut middle_value = problem.apply(middle_param);
+        if middle_value < best_value {
+            best_value = middle_value;
+            best_k = middle_param
+        }
+
+        let mut high_value = problem.apply(high_param);
+        if high_value < best_value {
+            best_value = high_value;
+            best_k = high_param;
+        }
+
+        for k in (0..50).map(|i| 2.0 + (0.1 * i as f32)) {
+            println!("[{}] {}", k, problem.apply(k));
+        }
+
+        for i in 0..0 {
+            println!(
+                "# low={}({}), middle={}({}), high={}({})",
+                low_value, low_param, middle_value, middle_param, high_value, high_param
+            );
+
+            let (k, value) = if low_value <= middle_value && middle_value <= high_value {
+                let param = (middle_param - low_param) / 2.0 + low_param;
+                let value = problem.apply(param);
+                (param, value)
+            } else if low_value >= middle_value && middle_value >= high_value {
+                let param = (high_param - middle_param) / 2.0 + middle_param;
+                let value = problem.apply(param);
+                (param, value)
+            } else {
+                assert!(
+                    low_value >= middle_value && middle_value <= high_value,
+                    "low={}, middle={}, high={}",
+                    low_value,
+                    middle_value,
+                    high_value
+                );
+                if middle_param - low_param > high_param - middle_param {
+                    let param = (middle_param - low_param) / 2.0 + low_param;
+                    let value = problem.apply(param);
+                    (param, value)
+                } else {
+                    let param = (high_param - middle_param) / 2.0 + middle_param;
+                    let value = problem.apply(param);
+                    (param, value)
+                }
+            };
+
+            if value < best_value {
+                best_value = value;
+                best_k = k;
+            } else if (value - best_value) < 1.0e-5 {
+                println!("break: {}", i);
+                break;
+            }
+
+            println!("=> {}, {} ({})", k, value, best_value);
+            if k <= middle_param {
+                if value <= low_value && value <= middle_value {
+                    high_param = middle_param;
+                    high_value = middle_value;
+                    middle_param = k;
+                    middle_value = value;
+                } else if value <= low_value {
+                    low_param = k;
+                    low_value = value;
+                } else {
+                    assert!(low_value <= value && value <= middle_value);
+                    high_param = middle_param;
+                    high_value = middle_value;
+                    middle_param = k;
+                    middle_value = value;
+                }
+            } else {
+                if value <= middle_value && value <= high_value {
+                    low_param = middle_param;
+                    low_value = middle_value;
+                    middle_param = k;
+                    middle_value = value;
+                } else if value <= high_value {
+                    high_param = k;
+                    high_value = value;
+                } else {
+                    assert!(middle_value <= value && value <= high_value);
+                    low_param = middle_param;
+                    low_value = middle_value;
+                    middle_param = k;
+                    middle_value = value;
+                }
+            }
+        }
+        println!(
+            "Optimized(k={},v={}): {:?}",
+            best_k,
+            best_value,
+            start.elapsed()
+        );
+
+        for i in 0..50 {
             let k = optim.ask(&mut rng).unwrap();
             let v = problem.apply(k as f32);
             optim.tell(k, v as f64).unwrap();
             let do_break = i > 50 && (best_value.abs() - v.abs()) < 1.0e-5;
             if v < best_value {
                 best_value = v;
-                best_k = k;
+                best_k = k as f32;
             }
             if do_break {
                 println!("break: {}", i);
                 break;
             }
         }
-        println!("Optimized(k={}): {:?}", best_k, start.elapsed());
+        println!(
+            "Optimized(k={},v={}): {:?}",
+            best_k,
+            best_value,
+            start.elapsed()
+        );
 
         best_k as f32
     }
