@@ -35,7 +35,7 @@ fn main() -> anyhow::Result<()> {
 
     let image = bimef::Image::from_bytes(info.width, info.height, &buf);
     let bimef = bimef::Bimef::new();
-    let image = image.to_rgb_f64();
+    let image = image.to_rgb_f32();
 
     let start = std::time::Instant::now();
     let enhanced_image = bimef.enhance(image);

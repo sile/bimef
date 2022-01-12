@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 #[derive(Debug)]
 pub struct Bimef {
     /// Enhancement ratio.
-    mu: f64,
+    mu: f32,
 
     /// Camera response model parameter.
-    _a: f64,
+    _a: f32,
 
     /// Camera response model parameter.
-    _b: f64,
+    _b: f32,
 }
 
 impl Bimef {
@@ -21,7 +21,7 @@ impl Bimef {
         }
     }
 
-    pub fn enhance(&self, image: Image<Rgb<f64>>) -> Image<Rgb<u8>> {
+    pub fn enhance(&self, image: Image<Rgb<f32>>) -> Image<Rgb<u8>> {
         let start = std::time::Instant::now();
 
         let illumination_map = image.get_illumination_map();
@@ -54,9 +54,9 @@ impl Bimef {
 
     fn max_entropy_enhance(
         &self,
-        image: &Image<Rgb<f64>>,
-        illumination_map: &[f64],
-    ) -> Image<Rgb<f64>> {
+        image: &Image<Rgb<f32>>,
+        illumination_map: &[f32],
+    ) -> Image<Rgb<f32>> {
         // TODO: resize 50x50
         let y = image.to_gray();
         let n = 50 * 50;
@@ -74,24 +74,24 @@ impl Bimef {
             .collect::<Vec<_>>();
 
         struct FindNegativeEntropy {
-            y: Vec<f64>,
+            y: Vec<f32>,
         }
 
         impl FindNegativeEntropy {
-            fn apply(&self, k: f64) -> f64 {
+            fn apply(&self, k: f32) -> f32 {
                 let applied_k = apply_k(&self.y, k);
                 let int_applied_k = applied_k
                     .into_iter()
                     .map(|v| (v.max(0.0).min(1.0) * 255.0).round() as u8)
                     .collect::<Vec<_>>();
-                let mut hist = BTreeMap::<u8, f64>::new();
+                let mut hist = BTreeMap::<u8, f32>::new();
                 for v in int_applied_k {
                     *hist.entry(v).or_default() += 1.0;
                 }
                 for v in hist.values_mut() {
-                    *v /= self.y.len() as f64;
+                    *v /= self.y.len() as f32;
                 }
-                let negative_entropy = hist.values().map(|&v| v * v.log2()).sum::<f64>();
+                let negative_entropy = hist.values().map(|&v| v * v.log2()).sum::<f32>();
                 negative_entropy
             }
         }
@@ -99,15 +99,15 @@ impl Bimef {
         let mut optim =
             tpe::TpeOptimizer::new(tpe::parzen_estimator(), tpe::range(1.0, 7.9).unwrap());
 
-        let mut best_value = std::f64::INFINITY;
+        let mut best_value = std::f32::INFINITY;
         let mut best_k = 1.0;
         let mut rng = rand::thread_rng();
         let problem = FindNegativeEntropy { y };
         let start = std::time::Instant::now();
         for i in 0..500 {
             let k = optim.ask(&mut rng).unwrap();
-            let v = problem.apply(k);
-            optim.tell(k, v).unwrap();
+            let v = problem.apply(k as f32);
+            optim.tell(k, v as f64).unwrap();
             let do_break = i > 50 && (best_value.abs() - v.abs()) < 1.0e-5;
             if v < best_value {
                 best_value = v;
@@ -120,11 +120,11 @@ impl Bimef {
         }
         println!("Optimized: {:?}", start.elapsed());
 
-        image.apply_k(best_k)
+        image.apply_k(best_k as f32)
     }
 }
 
-pub fn apply_k(xs: &[f64], k: f64) -> Vec<f64> {
+pub fn apply_k(xs: &[f32], k: f32) -> Vec<f32> {
     let a = -0.3293;
     let b = 1.1258;
     let beta = ((1.0 - k.powf(a)) * b).exp();
@@ -188,8 +188,8 @@ impl Image<Rgb<u8>> {
         }
     }
 
-    pub fn to_rgb_f64(&self) -> Image<Rgb<f64>> {
-        let pixels = self.pixels.iter().map(|p| p.to_rgb_f64()).collect();
+    pub fn to_rgb_f32(&self) -> Image<Rgb<f32>> {
+        let pixels = self.pixels.iter().map(|p| p.to_rgb_f32()).collect();
         Image {
             width: self.width,
             height: self.height,
@@ -198,9 +198,9 @@ impl Image<Rgb<u8>> {
     }
 }
 
-impl Image<Rgb<f64>> {
+impl Image<Rgb<f32>> {
     // brightness component.
-    pub fn to_gray(&self) -> Image<f64> {
+    pub fn to_gray(&self) -> Image<f32> {
         Image {
             width: self.width,
             height: self.height,
@@ -212,12 +212,12 @@ impl Image<Rgb<f64>> {
         }
     }
 
-    pub fn get_illumination_map(&self) -> Vec<f64> {
+    pub fn get_illumination_map(&self) -> Vec<f32> {
         // TODO: Vec<u8>
         self.pixels.iter().map(|p| p.max_value()).collect()
     }
 
-    pub fn apply_k(&self, k: f64) -> Self {
+    pub fn apply_k(&self, k: f32) -> Self {
         let a = -0.3293;
         let b = 1.1258;
         let beta = ((1.0 - k.powf(a)) * b).exp();
@@ -238,22 +238,22 @@ pub struct Rgb<T = u8> {
 }
 
 impl Rgb<u8> {
-    pub fn to_rgb_f64(self) -> Rgb<f64> {
-        let n = u8::MAX as f64;
+    pub fn to_rgb_f32(self) -> Rgb<f32> {
+        let n = u8::MAX as f32;
         Rgb {
-            r: self.r as f64 / n,
-            g: self.g as f64 / n,
-            b: self.b as f64 / n,
+            r: self.r as f32 / n,
+            g: self.g as f32 / n,
+            b: self.b as f32 / n,
         }
     }
 }
 
-impl Rgb<f64> {
-    pub fn max_value(&self) -> f64 {
+impl Rgb<f32> {
+    pub fn max_value(&self) -> f32 {
         self.r.max(self.g.max(self.b))
     }
 }
 
-fn to_u8(v: f64) -> u8 {
+fn to_u8(v: f32) -> u8 {
     (v.max(0.0).min(1.0) * 255.0).round() as u8
 }
