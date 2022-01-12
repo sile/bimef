@@ -1,41 +1,27 @@
 #[derive(Debug)]
-pub struct Bimef {
-    /// Enhancement ratio.
-    mu: f32,
-
-    /// Camera response model parameter.
-    _a: f32,
-
-    /// Camera response model parameter.
-    _b: f32,
-}
+pub struct Bimef {}
 
 impl Bimef {
     pub fn new() -> Self {
-        Self {
-            mu: 0.5,
-            _a: -0.3293,
-            _b: 1.1258,
-        }
+        Self {}
     }
 
     pub fn enhance(&self, image: Image<Rgb<f32>>) -> Image<Rgb<u8>> {
-        let start = std::time::Instant::now();
-
         let k = self.max_entropy_enhance(&image);
 
         let camera = CameraResponseModel::new(k);
 
         let fused = image.map(|_, p0| {
-            let w = p0.illumination().powf(self.mu);
+            let w = p0.illumination().sqrt();
             let r0 = p0.r * w;
             let g0 = p0.g * w;
             let b0 = p0.b * w;
 
             let p1 = camera.apply(&p0);
-            let r1 = p1.r * (1.0 - w);
-            let g1 = p1.g * (1.0 - w);
-            let b1 = p1.b * (1.0 - w);
+            let w1 = 1.0 - w;
+            let r1 = p1.r * w1;
+            let g1 = p1.g * w1;
+            let b1 = p1.b * w1;
 
             Rgb {
                 r: to_u8(r0 + r1),
@@ -53,7 +39,7 @@ impl Bimef {
             .pixels
             .iter()
             .enumerate()
-            .filter(|x| x.0 % m == 0) // TODO: Move before the first filter()
+            .filter(|x| x.0 % m == 0)
             .filter(|(_, x)| x.illumination() < 0.5)
             .map(|(_, x)| x.gray())
             .collect::<Vec<_>>();
@@ -109,6 +95,7 @@ impl Bimef {
     }
 }
 
+// TODO: Use CameraResponseModel
 pub fn apply_k(xs: &[f32], k: f32) -> impl '_ + Iterator<Item = f32> {
     let a = -0.3293;
     let b = 1.1258;
