@@ -24,47 +24,39 @@ impl Bimef {
     pub fn enhance(&self, image: Image<Rgb<f64>>) -> Image<Rgb<u8>> {
         let start = std::time::Instant::now();
 
-        let im = IlluminationMap::new(&image);
-        let t_our = im.iter_f2().collect::<Vec<_>>();
-        let is_bad = t_our.iter().map(|&v| v < 0.5).collect::<Vec<_>>();
-        let bads = is_bad.iter().copied().filter(|&b| b).count();
-        let goods = is_bad.len() - bads;
-        let j = self.max_entropy_enhance(&image, &is_bad);
+        let illumination_map = image.get_illumination_map();
+        println!("Elapsed(0): {:?}", start.elapsed());
+
+        let j = self.max_entropy_enhance(&image, &illumination_map);
+        println!("Elapsed(2): {:?}", start.elapsed());
 
         // Weight matrix.
-        let image2 = image.map(|i, rgb| {
-            let w = t_our[i].powf(self.mu);
+        let fused = image.map(|i, p0| {
+            let w = illumination_map[i].powf(self.mu);
+            let r0 = p0.r * w;
+            let g0 = p0.g * w;
+            let b0 = p0.b * w;
+
+            let p1 = j.pixels[i];
+            let r1 = p1.r * (1.0 - w);
+            let g1 = p1.g * (1.0 - w);
+            let b1 = p1.b * (1.0 - w);
+
             Rgb {
-                r: rgb.r * w,
-                g: rgb.g * w,
-                b: rgb.b * w,
-            }
-        });
-        let j2 = j.map(|i, rgb| {
-            let w = t_our[i].powf(self.mu);
-            Rgb {
-                r: rgb.r * (1.0 - w),
-                g: rgb.g * (1.0 - w),
-                b: rgb.b * (1.0 - w),
+                r: to_u8(r0 + r1),
+                g: to_u8(g0 + g1),
+                b: to_u8(b0 + b1),
             }
         });
 
-        let fused = image2.map(|i, a| {
-            let b = j2.pixels[i];
-            fn to_u8(v: f64) -> u8 {
-                (v.max(0.0).min(1.0) * 255.0).round() as u8
-            }
-            Rgb {
-                r: to_u8(a.r + b.r),
-                g: to_u8(a.g + b.g),
-                b: to_u8(a.b + b.b),
-            }
-        });
-        println!("Elapsed: {:?}", start.elapsed());
         fused
     }
 
-    fn max_entropy_enhance(&self, image: &Image<Rgb<f64>>, is_bad: &[bool]) -> Image<Rgb<f64>> {
+    fn max_entropy_enhance(
+        &self,
+        image: &Image<Rgb<f64>>,
+        illumination_map: &[f64],
+    ) -> Image<Rgb<f64>> {
         // TODO: resize 50x50
         let y = image.to_gray();
         let n = 50 * 50;
@@ -73,8 +65,8 @@ impl Bimef {
             .pixels
             .iter()
             .copied()
-            .zip(is_bad.iter().copied())
-            .filter(|x| x.1)
+            .zip(illumination_map.iter().copied())
+            .filter(|x| x.1 < 0.5)
             .map(|x| x.0)
             .enumerate()
             .filter(|x| x.0 % m == 0)
@@ -129,201 +121,6 @@ impl Bimef {
         println!("Optimized: {:?}", start.elapsed());
 
         image.apply_k(best_k)
-    }
-}
-
-#[derive(Debug)]
-pub struct IlluminationMap {
-    values: Vec<Vec<f64>>,
-}
-
-impl IlluminationMap {
-    pub fn print(&self) {
-        for v in &self.values {
-            println!("{:?}", v);
-        }
-    }
-
-    pub fn new(image: &Image<Rgb<f64>>) -> Self {
-        let mut values = vec![vec![0.0; image.width as usize]; image.height as usize];
-        for y in 0..image.height as usize {
-            for x in 0..image.width as usize {
-                values[y][x] = image.pixels[y * image.width as usize + x].max_value();
-            }
-        }
-        Self { values }
-    }
-
-    pub fn iter_f(&self) -> impl '_ + Iterator<Item = f64> {
-        let x_len = self.x_len();
-        let y_len = self.y_len();
-        (0..x_len).flat_map(move |x| (0..y_len).map(move |y| self.values[y][x]))
-    }
-
-    pub fn iter_f2(&self) -> impl '_ + Iterator<Item = f64> {
-        let x_len = self.x_len();
-        let y_len = self.y_len();
-        (0..y_len).flat_map(move |y| (0..x_len).map(move |x| self.values[y][x]))
-    }
-
-    pub fn iter_2x(&self) -> impl '_ + Iterator<Item = f64> {
-        let x_len = self.x_len();
-        let y_len = self.y_len();
-        (0..x_len).flat_map(move |x| {
-            (0..y_len).map(move |y| self.values[y][x.checked_sub(1).unwrap_or(x_len - 1)])
-        })
-    }
-
-    pub fn iter_2y(&self) -> impl '_ + Iterator<Item = f64> {
-        let x_len = self.x_len();
-        let y_len = self.y_len();
-        (0..x_len).flat_map(move |x| {
-            (0..y_len).map(move |y| self.values[y.checked_sub(1).unwrap_or(y_len - 1)][x])
-        })
-    }
-
-    pub fn iter_3x(&self) -> impl '_ + Iterator<Item = f64> {
-        let x_len = self.x_len();
-        let y_len = self.y_len();
-        (0..x_len).flat_map(move |x| {
-            (0..y_len).map(move |y| {
-                if x == 0 {
-                    self.values[y][x_len - 1]
-                } else {
-                    0.0
-                }
-            })
-        })
-    }
-
-    pub fn iter_3y(&self) -> impl '_ + Iterator<Item = f64> {
-        let x_len = self.x_len();
-        let y_len = self.y_len();
-        (0..x_len).flat_map(move |x| {
-            (0..y_len).map(move |y| {
-                if y == 0 {
-                    self.values[y_len - 1][x]
-                } else {
-                    0.0
-                }
-            })
-        })
-    }
-
-    pub fn iter_4x(&self) -> impl '_ + Iterator<Item = f64> {
-        let x_len = self.x_len();
-        let y_len = self.y_len();
-        (0..x_len).flat_map(move |x| {
-            (0..y_len).map(move |y| {
-                if x == x_len - 1 {
-                    0.0
-                } else {
-                    self.values[y][x]
-                }
-            })
-        })
-    }
-
-    pub fn iter_4y(&self) -> impl '_ + Iterator<Item = f64> {
-        let x_len = self.x_len();
-        let y_len = self.y_len();
-        (0..x_len).flat_map(move |x| {
-            (0..y_len).map(move |y| {
-                if y == y_len - 1 {
-                    0.0
-                } else {
-                    self.values[y][x]
-                }
-            })
-        })
-    }
-
-    pub fn calc_weights(&mut self, other: &Self, sharpness: f64) {
-        for y in 0..self.y_len() {
-            for x in 0..self.x_len() {
-                let w = 1.0 / (self.values[y][x].abs() * other.values[y][x].abs() + sharpness);
-                self.values[y][x] = w;
-            }
-        }
-    }
-
-    pub fn convolve_h(&self, sigma: usize) -> Self {
-        let mut values = vec![vec![0.0; self.values[0].len()]; self.values.len()];
-        for y in 0..self.y_len() {
-            for x in 0..self.x_len() {
-                values[y][x] = (0..sigma)
-                    .map(|i| {
-                        (x + i)
-                            .checked_sub(sigma / 2)
-                            .and_then(|i| self.values[y].get(i).copied())
-                            .unwrap_or(0.0)
-                    })
-                    .sum::<f64>();
-            }
-        }
-        Self { values }
-    }
-
-    pub fn convolve_v(&self, sigma: usize) -> Self {
-        let mut values = vec![vec![0.0; self.values[0].len()]; self.values.len()];
-        for y in 0..self.y_len() {
-            for x in 0..self.x_len() {
-                values[y][x] = (0..sigma)
-                    .map(|i| {
-                        (y + i)
-                            .checked_sub(sigma / 2)
-                            .and_then(|i| self.values.get(i).map(|row| row[x]))
-                            .unwrap_or(0.0)
-                    })
-                    .sum::<f64>();
-            }
-        }
-        Self { values }
-    }
-
-    pub fn x_len(&self) -> usize {
-        self.values[0].len()
-    }
-
-    pub fn y_len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn diff_h(&self) -> Self {
-        let mut values = Vec::new();
-        for row in &self.values {
-            values.push(
-                row.iter()
-                    .copied()
-                    .zip(
-                        row.iter()
-                            .copied()
-                            .skip(1)
-                            .chain(row.iter().copied().take(1)),
-                    )
-                    .map(|(a, b)| b - a)
-                    .collect::<Vec<_>>(),
-            );
-        }
-        Self { values }
-    }
-
-    pub fn diff_v(&self) -> Self {
-        let mut values = Vec::new();
-        for (row0, row1) in self
-            .values
-            .iter()
-            .zip(self.values.iter().skip(1).chain(self.values.iter().take(1)))
-        {
-            values.push(
-                row0.iter()
-                    .copied()
-                    .zip(row1.iter().copied())
-                    .map(|(a, b)| b - a)
-                    .collect::<Vec<_>>(),
-            );
-        }
-        Self { values }
     }
 }
 
@@ -415,6 +212,11 @@ impl Image<Rgb<f64>> {
         }
     }
 
+    pub fn get_illumination_map(&self) -> Vec<f64> {
+        // TODO: Vec<u8>
+        self.pixels.iter().map(|p| p.max_value()).collect()
+    }
+
     pub fn apply_k(&self, k: f64) -> Self {
         let a = -0.3293;
         let b = 1.1258;
@@ -450,4 +252,8 @@ impl Rgb<f64> {
     pub fn max_value(&self) -> f64 {
         self.r.max(self.g.max(self.b))
     }
+}
+
+fn to_u8(v: f64) -> u8 {
+    (v.max(0.0).min(1.0) * 255.0).round() as u8
 }
